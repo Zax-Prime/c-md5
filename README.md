@@ -1,21 +1,68 @@
 md5 Implemented in C
 ====================
 
-C implementation of the md5 checksum algorithm
+Fast, portable C implementation of the MD5 checksum algorithm.
+
+Build
+-----
+
+```sh
+make
+```
+
+Or manually:
+
+```sh
+clang -O3 md5.c main.c -pthread -o md5
+```
 
 Usage
-----
+-----
 
-```
-clang -O2 md5.c -o md5
+Single file or standard input:
+
+```sh
 ./md5 file.txt
 ./md5 < file.bin
-echo 'hello' | ./md5
-DEBUG=1 ./md5 file.txt
+echo -n 'hello' | ./md5
 ```
 
-Build with `-O2` or `-O3`, without it the hash runs about 4x slower. The code
-is plain C and doesn't need `-march=native` to be fast.
+Multiple files (processed in parallel across available CPU cores):
+
+```sh
+./md5 file1.bin file2.bin file3.bin
+```
+
+Testing
+-------
+
+Run the test suite including edge case boundary checks:
+
+```sh
+make test
+```
+
+Library Usage
+-------------
+
+Include `md5.h` in your project:
+
+```c
+#include "md5.h"
+
+// Stream API
+struct md5_ctx ctx;
+md5_init(&ctx);
+md5_update(&ctx, buffer, len);
+uint8_t digest[16];
+md5_final(&ctx, digest);
+
+char hex[33];
+md5_to_hex(digest, hex);
+
+// Or hash a file directly
+md5_file("path/to/file", digest);
+```
 
 Attribution
 -----------

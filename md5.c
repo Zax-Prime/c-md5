@@ -1,12 +1,6 @@
 /**
  * C implementation of the md5 checksum algorithm
  *
- * Usage
- *
- *   $ ./md5 file.txt
- *   $ ./md5 < file.bin
- *   $ DEBUG=1 ./md5 < file.bin
- *
  * # Created
  * Author: Dave Eddy <ysap@daveeddy.com>
  * Date: August 24, 2026
@@ -15,6 +9,8 @@
  * # Contributors
  * - Dave Eddy <ysap@daveeddy.com>
  */
+
+#include "md5.h"
 
 #include <errno.h>
 #include <fcntl.h>
@@ -34,14 +30,7 @@
 #define HAVE_MMAP 1
 #endif
 
-#define DEBUG(fmt, ...) do { \
-	if (g_debug) { \
-		fprintf(stderr, "[%d:%s()] ", __LINE__, __func__); \
-		fprintf(stderr, fmt, ##__VA_ARGS__); \
-	} \
-} while (false)
-
-// read buffer size, multiple of 64
+// buffer size for streaming fd reads
 #define BUF_SIZE (64 * 1024)
 
 #if defined(__STDC_VERSION__) && __STDC_VERSION__ >= 201112L
@@ -51,13 +40,6 @@
 #else
 #define ALIGN64
 #endif
-
-static bool g_debug = false;
-
-struct md5_state {
-	uint32_t a, b, c, d;
-	uint64_t len;
-};
 
 // round functions
 #define F(x, y, z) ((z) ^ ((x) & ((y) ^ (z))))
@@ -97,11 +79,11 @@ static inline uint32_t load_le32(const uint8_t *p) {
 #define M(i) load_le32(p + (i) * 4)
 
 // process n full 64 byte blocks starting at p
-static void process_blocks(struct md5_state *st, const uint8_t *p, size_t n) {
-	uint32_t a = st->a;
-	uint32_t b = st->b;
-	uint32_t c = st->c;
-	uint32_t d = st->d;
+static void process_blocks(struct md5_ctx *ctx, const uint8_t *p, size_t n) {
+	uint32_t a = ctx->a;
+	uint32_t b = ctx->b;
+	uint32_t c = ctx->c;
+	uint32_t d = ctx->d;
 
 	while (n--) {
 		uint32_t A = a, B = b, C = c, D = d;
@@ -186,14 +168,14 @@ static void process_blocks(struct md5_state *st, const uint8_t *p, size_t n) {
 		p += 64;
 	}
 
-	st->a = a;
-	st->b = b;
-	st->c = c;
-	st->d = d;
+	ctx->a = a;
+	ctx->b = b;
+	ctx->c = c;
+	ctx->d = d;
 }
 
 // pad with 0x80, zeros, and bit length
-static void finalize_tail(struct md5_state *st, const uint8_t *rem_bytes, size_t rem) {
+static void finalize_tail(struct md5_ctx *ctx, const uint8_t *rem_bytes, size_t rem) {
 	uint8_t tail[128];
 	if (rem > 0)
 		memcpy(tail, rem_bytes, rem);
@@ -202,23 +184,82 @@ static void finalize_tail(struct md5_state *st, const uint8_t *rem_bytes, size_t
 	size_t tail_len = rem <= 56 ? 64 : 128;
 	memset(tail + rem, 0, tail_len - 8 - rem);
 
-	uint64_t bits = st->len << 3;
+	uint64_t bits = ctx->len << 3;
 	for (size_t i = 0; i < 8; i++)
 		tail[tail_len - 8 + i] = (uint8_t)(bits >> (i * 8));
 
-	DEBUG("padding into %zu final block(s)\n", tail_len / 64);
-	process_blocks(st, tail, tail_len / 64);
+	process_blocks(ctx, tail, tail_len / 64);
 }
 
-// returns 0 on success, -1 on failure
-static int process_input(struct md5_state *st, int fd) {
+void md5_init(struct md5_ctx *ctx) {
+	ctx->a = 0x67452301;
+	ctx->b = 0xefcdab89;
+	ctx->c = 0x98badcfe;
+	ctx->d = 0x10325476;
+	ctx->len = 0;
+	ctx->buf_len = 0;
+}
+
+void md5_update(struct md5_ctx *ctx, const void *data, size_t len) {
+	const uint8_t *p = (const uint8_t *)data;
+	ctx->len += (uint64_t)len;
+
+	if (ctx->buf_len > 0) {
+		size_t need = 64 - ctx->buf_len;
+		if (len < need) {
+			memcpy(ctx->buf + ctx->buf_len, p, len);
+			ctx->buf_len += len;
+			return;
+		}
+		memcpy(ctx->buf + ctx->buf_len, p, need);
+		process_blocks(ctx, ctx->buf, 1);
+		p += need;
+		len -= need;
+		ctx->buf_len = 0;
+	}
+
+	size_t full = len & ~(size_t)63;
+	if (full > 0) {
+		process_blocks(ctx, p, full / 64);
+		p += full;
+		len -= full;
+	}
+
+	if (len > 0) {
+		memcpy(ctx->buf, p, len);
+		ctx->buf_len = len;
+	}
+}
+
+void md5_final(struct md5_ctx *ctx, uint8_t digest[16]) {
+	finalize_tail(ctx, ctx->buf, ctx->buf_len);
+
+	uint32_t words[] = {ctx->a, ctx->b, ctx->c, ctx->d};
+	for (int i = 0; i < 4; i++) {
+		for (int j = 0; j < 4; j++)
+			digest[i * 4 + j] = (uint8_t)(words[i] >> (j * 8));
+	}
+}
+
+void md5_to_hex(const uint8_t digest[16], char hex[33]) {
+	static const char digits[] = "0123456789abcdef";
+	for (int i = 0; i < 16; i++) {
+		hex[i * 2 + 0] = digits[digest[i] >> 4];
+		hex[i * 2 + 1] = digits[digest[i] & 0xf];
+	}
+	hex[32] = '\0';
+}
+
+int md5_fd(int fd, uint8_t digest[16]) {
 	ALIGN64 static uint8_t buf[BUF_SIZE];
-	size_t have = 0;
+	struct md5_ctx ctx;
+	md5_init(&ctx);
 
 #ifdef POSIX_FADV_SEQUENTIAL
 	posix_fadvise(fd, 0, 0, POSIX_FADV_SEQUENTIAL);
 #endif
 
+	size_t have = 0;
 	while (true) {
 		ssize_t n = read(fd, buf + have, sizeof (buf) - have);
 
@@ -228,29 +269,36 @@ static int process_input(struct md5_state *st, int fd) {
 			perror("read");
 			return -1;
 		} else if (n == 0) {
-			// EOF
 			break;
 		}
 
-		DEBUG("read %zd bytes\n", n);
-
-		st->len += (uint64_t)n;
+		ctx.len += (uint64_t)n;
 		have += (size_t)n;
 
-		// hash every full block, keep leftover bytes
 		size_t full = have & ~(size_t)63;
-		process_blocks(st, buf, full / 64);
+		process_blocks(&ctx, buf, full / 64);
 		have -= full;
 		if (have > 0 && full > 0)
 			memmove(buf, buf + full, have);
 	}
 
-	finalize_tail(st, buf, have);
+	finalize_tail(&ctx, buf, have);
+
+	uint32_t words[] = {ctx.a, ctx.b, ctx.c, ctx.d};
+	for (int i = 0; i < 4; i++) {
+		for (int j = 0; j < 4; j++)
+			digest[i * 4 + j] = (uint8_t)(words[i] >> (j * 8));
+	}
 	return 0;
 }
 
-// try mmap for regular files, fall back to read for pipes or failures
-static int process_file(struct md5_state *st, int fd) {
+int md5_file(const char *path, uint8_t digest[16]) {
+	int fd = open(path, O_RDONLY);
+	if (fd == -1) {
+		perror("open");
+		return -1;
+	}
+
 #ifdef HAVE_MMAP
 	struct stat sb;
 	if (fstat(fd, &sb) == 0 && S_ISREG(sb.st_mode) && sb.st_size > 0) {
@@ -260,71 +308,33 @@ static int process_file(struct md5_state *st, int fd) {
 #ifdef MADV_SEQUENTIAL
 			madvise(addr, len, MADV_SEQUENTIAL);
 #endif
-			st->len = (uint64_t)len;
+			struct md5_ctx ctx;
+			md5_init(&ctx);
+			ctx.len = (uint64_t)len;
+
 			size_t full = len & ~(size_t)63;
-			process_blocks(st, (const uint8_t *)addr, full / 64);
+			process_blocks(&ctx, (const uint8_t *)addr, full / 64);
 
 			size_t rem = len - full;
 			uint8_t tail_bytes[64];
 			if (rem > 0)
 				memcpy(tail_bytes, (const uint8_t *)addr + full, rem);
 			munmap(addr, len);
+			close(fd);
 
-			finalize_tail(st, tail_bytes, rem);
+			finalize_tail(&ctx, tail_bytes, rem);
+
+			uint32_t words[] = {ctx.a, ctx.b, ctx.c, ctx.d};
+			for (int i = 0; i < 4; i++) {
+				for (int j = 0; j < 4; j++)
+					digest[i * 4 + j] = (uint8_t)(words[i] >> (j * 8));
+			}
 			return 0;
 		}
 	}
 #endif
-	return process_input(st, fd);
-}
 
-static void print_hash(const struct md5_state *st) {
-	static const char hex[] = "0123456789abcdef";
-	uint32_t words[] = {st->a, st->b, st->c, st->d};
-	char out[33];
-
-	for (int i = 0; i < 4; i++) {
-		for (int j = 0; j < 4; j++) {
-			uint8_t byte = (uint8_t)(words[i] >> (j * 8));
-			out[i * 8 + j * 2] = hex[byte >> 4];
-			out[i * 8 + j * 2 + 1] = hex[byte & 0xf];
-		}
-	}
-	out[32] = '\0';
-
-	puts(out);
-}
-
-int main(int argc, char **argv) {
-	g_debug = getenv("DEBUG") != NULL;
-
-	int fd = 0;
-
-	// read from the file given as an argument
-	if (argc > 1) {
-		char *fname = argv[1];
-
-		DEBUG("opening file: %s\n", fname);
-		fd = open(fname, O_RDONLY);
-
-		if (fd == -1) {
-			perror("open");
-			return 1;
-		}
-	}
-
-	struct md5_state st = {
-		0x67452301, 0xefcdab89, 0x98badcfe, 0x10325476, 0
-	};
-
-	int ret = process_file(&st, fd);
-
+	int ret = md5_fd(fd, digest);
 	close(fd);
-
-	if (ret != 0)
-		return 1;
-
-	print_hash(&st);
-
-	return 0;
+	return ret;
 }

@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+set -e
 
 declare -A files=(
 	[files/empty.txt]='d41d8cd98f00b204e9800998ecf8427e'
@@ -20,5 +21,27 @@ for file in "${!files[@]}"; do
 		code=1
 	fi
 done
+
+# test stdin
+echo -n "checking stdin piping... "
+have_stdin=$(echo -n "hello" | ./md5)
+want_stdin="5d41402abc4b2a76b9719d911017c592"
+if [[ "$have_stdin" == "$want_stdin" ]]; then
+	echo 'ok'
+else
+	echo "fail! have '$have_stdin'"
+	code=1
+fi
+
+# test multi-file output
+echo -n "checking multi-file mode... "
+out=$(./md5 files/empty.txt files/hello.txt)
+if echo "$out" | grep -q "d41d8cd98f00b204e9800998ecf8427e  files/empty.txt" && \
+   echo "$out" | grep -q "b1946ac92492d2347c6235b4d2611184  files/hello.txt"; then
+	echo 'ok'
+else
+	echo "fail! output: $out"
+	code=1
+fi
 
 exit "$code"
