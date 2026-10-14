@@ -7,7 +7,7 @@ Usage
 ----
 
 ```
-cc md5.c -o md5
+clang md5.c -o md5
 ./md5 file.txt
 ./md5 < file.bin
 echo 'hello' | ./md5

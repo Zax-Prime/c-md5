@@ -120,7 +120,7 @@ void process_block() {
 	d0 += D;
 }
 
-inline void process_byte(uint8_t byte) {
+static inline void process_byte(uint8_t byte) {
 	DEBUG("processing byte: %u\n", byte);
 
 	// store the byte
