@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# Originally created by Dave Eddy; updated by Zax-Prime
 set -e
 
 declare -A files=(

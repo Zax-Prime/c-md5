@@ -1,13 +1,11 @@
 /**
- * C implementation of the md5 checksum algorithm
+ * Fast, portable C implementation of the md5 checksum algorithm
  *
- * # Created
- * Author: Dave Eddy <ysap@daveeddy.com>
- * Date: August 24, 2026
+ * Author: Zax-Prime
  * License: MIT
  *
- * # Contributors
- * - Dave Eddy <ysap@daveeddy.com>
+ * Attribution:
+ * Originally written by Dave Eddy <ysap@daveeddy.com> (August 24, 2026).
  */
 
 #include "md5.h"

@@ -1,13 +1,11 @@
 /**
  * CLI frontend for md5 checksums
  *
- * # Created
- * Author: Dave Eddy <ysap@daveeddy.com>
- * Date: August 24, 2026
+ * Author: Zax-Prime
  * License: MIT
  *
- * # Contributors
- * - Dave Eddy <ysap@daveeddy.com>
+ * Attribution:
+ * Based on c-md5 originally written by Dave Eddy <ysap@daveeddy.com>.
  */
 
 #include "md5.h"

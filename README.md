@@ -64,8 +64,10 @@ md5_to_hex(digest, hex);
 md5_file("path/to/file", digest);
 ```
 
-Attribution
------------
+Authors & Attribution
+---------------------
+
+Maintained and optimized by Zax-Prime.
 
 This project is a fork of [bahamas10/c-md5](https://github.com/bahamas10/c-md5),
 originally written by Dave Eddy.

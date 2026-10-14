@@ -1,5 +1,8 @@
 /**
  * Comprehensive edge case test suite for md5
+ *
+ * Author: Zax-Prime
+ * License: MIT
  */
 
 #include "md5.h"

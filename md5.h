@@ -1,3 +1,13 @@
+/**
+ * MD5 checksum library interface
+ *
+ * Author: Zax-Prime
+ * License: MIT
+ *
+ * Attribution:
+ * Based on c-md5 originally written by Dave Eddy <ysap@daveeddy.com>.
+ */
+
 #ifndef MD5_H
 #define MD5_H
 
