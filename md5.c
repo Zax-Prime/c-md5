@@ -25,7 +25,14 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/types.h>
+#include <sys/stat.h>
 #include <unistd.h>
+
+#if defined(__unix__) || defined(__APPLE__) || defined(__linux__) || \
+    (defined(__POSIX_C_SOURCE) && __POSIX_C_SOURCE >= 200112L)
+#include <sys/mman.h>
+#define HAVE_MMAP 1
+#endif
 
 #define DEBUG(fmt, ...) do { \
 	if (g_debug) { \
@@ -34,8 +41,16 @@
 	} \
 } while (false)
 
-// read buffer size, must be a multiple of 64
+// read buffer size, multiple of 64
 #define BUF_SIZE (64 * 1024)
+
+#if defined(__STDC_VERSION__) && __STDC_VERSION__ >= 201112L
+#define ALIGN64 _Alignas(64)
+#elif defined(__GNUC__) || defined(__clang__)
+#define ALIGN64 __attribute__((aligned(64)))
+#else
+#define ALIGN64
+#endif
 
 static bool g_debug = false;
 
@@ -44,17 +59,13 @@ struct md5_state {
 	uint64_t len;
 };
 
-// round functions, written so the newest value (x) is used as late as
-// possible. G is split into two parts that don't share bits, see STEP_G.
+// round functions
 #define F(x, y, z) ((z) ^ ((x) & ((y) ^ (z))))
 #define H(x, y, z) ((x) ^ ((y) ^ (z)))
 #define I(x, y, z) ((y) ^ ((x) | ~(z)))
 
 #define ROTL(x, n) (((x) << (n)) | ((x) >> (32 - (n))))
 
-// clang and gcc like to move the constant add to after the round function,
-// which puts an extra add on the slow path. this empty asm stops that. other
-// compilers just skip it.
 #if defined(__GNUC__) || defined(__clang__)
 #define KEEP(x) __asm__("" : "+r"(x))
 #else
@@ -68,8 +79,8 @@ struct md5_state {
 	(a) = ROTL((a), (s)) + (b); \
 } while (false)
 
-// G(b, c, d) = (b & d) | (c & ~d), the two halves never overlap so we can
-// add them separately and do the c part before b is ready
+// G(b, c, d) = (b & d) | (c & ~d). disjoint bits allow adding the c term
+// before b is ready.
 #define STEP_G(a, b, c, d, m, k, s) do { \
 	(a) += (m) + (k) + ((c) & ~(d)); \
 	KEEP(a); \
@@ -77,8 +88,7 @@ struct md5_state {
 	(a) = ROTL((a), (s)) + (b); \
 } while (false)
 
-// little endian load, works on any byte order and alignment. clang and gcc
-// turn this into a single load on little endian targets.
+// little endian load
 static inline uint32_t load_le32(const uint8_t *p) {
 	return (uint32_t)p[0] | (uint32_t)p[1] << 8 |
 	    (uint32_t)p[2] << 16 | (uint32_t)p[3] << 24;
@@ -182,10 +192,32 @@ static void process_blocks(struct md5_state *st, const uint8_t *p, size_t n) {
 	st->d = d;
 }
 
+// pad with 0x80, zeros, and bit length
+static void finalize_tail(struct md5_state *st, const uint8_t *rem_bytes, size_t rem) {
+	uint8_t tail[128];
+	if (rem > 0)
+		memcpy(tail, rem_bytes, rem);
+	tail[rem++] = 0x80;
+
+	size_t tail_len = rem <= 56 ? 64 : 128;
+	memset(tail + rem, 0, tail_len - 8 - rem);
+
+	uint64_t bits = st->len << 3;
+	for (size_t i = 0; i < 8; i++)
+		tail[tail_len - 8 + i] = (uint8_t)(bits >> (i * 8));
+
+	DEBUG("padding into %zu final block(s)\n", tail_len / 64);
+	process_blocks(st, tail, tail_len / 64);
+}
+
 // returns 0 on success, -1 on failure
 static int process_input(struct md5_state *st, int fd) {
-	static uint8_t buf[BUF_SIZE];
+	ALIGN64 static uint8_t buf[BUF_SIZE];
 	size_t have = 0;
+
+#ifdef POSIX_FADV_SEQUENTIAL
+	posix_fadvise(fd, 0, 0, POSIX_FADV_SEQUENTIAL);
+#endif
 
 	while (true) {
 		ssize_t n = read(fd, buf + have, sizeof (buf) - have);
@@ -205,7 +237,7 @@ static int process_input(struct md5_state *st, int fd) {
 		st->len += (uint64_t)n;
 		have += (size_t)n;
 
-		// hash every full block, keep the leftover bytes for next time
+		// hash every full block, keep leftover bytes
 		size_t full = have & ~(size_t)63;
 		process_blocks(st, buf, full / 64);
 		have -= full;
@@ -213,23 +245,37 @@ static int process_input(struct md5_state *st, int fd) {
 			memmove(buf, buf + full, have);
 	}
 
-	// pad with 0x80 then zeros until 56 mod 64, then the length in bits
-	// as a 64 bit little endian int. this takes one or two blocks.
-	uint8_t tail[128];
-	memcpy(tail, buf, have);
-	tail[have++] = 0x80;
-
-	size_t tail_len = have <= 56 ? 64 : 128;
-	memset(tail + have, 0, tail_len - 8 - have);
-
-	uint64_t bits = st->len << 3;
-	for (size_t i = 0; i < 8; i++)
-		tail[tail_len - 8 + i] = (uint8_t)(bits >> (i * 8));
-
-	DEBUG("padding into %zu final block(s)\n", tail_len / 64);
-	process_blocks(st, tail, tail_len / 64);
-
+	finalize_tail(st, buf, have);
 	return 0;
+}
+
+// try mmap for regular files, fall back to read for pipes or failures
+static int process_file(struct md5_state *st, int fd) {
+#ifdef HAVE_MMAP
+	struct stat sb;
+	if (fstat(fd, &sb) == 0 && S_ISREG(sb.st_mode) && sb.st_size > 0) {
+		size_t len = (size_t)sb.st_size;
+		void *addr = mmap(NULL, len, PROT_READ, MAP_SHARED, fd, 0);
+		if (addr != MAP_FAILED) {
+#ifdef MADV_SEQUENTIAL
+			madvise(addr, len, MADV_SEQUENTIAL);
+#endif
+			st->len = (uint64_t)len;
+			size_t full = len & ~(size_t)63;
+			process_blocks(st, (const uint8_t *)addr, full / 64);
+
+			size_t rem = len - full;
+			uint8_t tail_bytes[64];
+			if (rem > 0)
+				memcpy(tail_bytes, (const uint8_t *)addr + full, rem);
+			munmap(addr, len);
+
+			finalize_tail(st, tail_bytes, rem);
+			return 0;
+		}
+	}
+#endif
+	return process_input(st, fd);
 }
 
 static void print_hash(const struct md5_state *st) {
@@ -271,7 +317,7 @@ int main(int argc, char **argv) {
 		0x67452301, 0xefcdab89, 0x98badcfe, 0x10325476, 0
 	};
 
-	int ret = process_input(&st, fd);
+	int ret = process_file(&st, fd);
 
 	close(fd);
 
