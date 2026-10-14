@@ -14,14 +14,11 @@ echo 'hello' | ./md5
 DEBUG=1 ./md5 file.txt
 ```
 
-YouTube
--------
+Attribution
+-----------
 
-Watch me build this live on YouTube.
-
-<a href="https://www.youtube.com/watch?v=s84F99Ae868"><img alt="C md5 YouTube
-Thumbnail" src="https://files.daveeddy.com/ysap/c-md5-thumbnail.jpg"
-/></a>
+This project is a fork of [bahamas10/c-md5](https://github.com/bahamas10/c-md5),
+originally written by Dave Eddy.
 
 License
 -------
